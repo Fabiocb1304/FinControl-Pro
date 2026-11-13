@@ -371,8 +371,10 @@ actor FinanceEngineActor {
 
     func fetchCardMetricsList(month: Int, year: Int) throws -> [CardMetrics] {
         let cards = try modelContext.fetch(FetchDescriptor<CreditCard>(sortBy: [SortDescriptor(\.name)]))
+        var results: [CardMetrics] = []
+        results.reserveCapacity(cards.count)
 
-        return try cards.map { card in
+        for card in cards {
             let invoices = card.safeInvoices
             let unpaidInvoices = invoices.filter { $0.status != .paid }
 
@@ -398,27 +400,30 @@ actor FinanceEngineActor {
             )
             currentInvoice.recalculateCache()
 
-            return CardMetrics(
-                cardID: card.persistentModelID,
-                uuid: card.id,
-                name: card.name,
-                totalLimit: card.totalLimit,
-                closingDay: card.closingDay,
-                dueDay: card.dueDay,
-                colorHex: card.colorHex,
-                openOwnAmount: openOwn,
-                openThirdPartyAmount: openThirdParty,
-                prepaidOnOpenInvoices: prepaidOnOpen,
-                availableLimit: availableLimit,
-                currentInvoiceID: currentInvoice.persistentModelID,
-                currentInvoiceStatus: currentInvoice.status,
-                currentMonthGross: currentInvoice.cachedGrossTotal,
-                currentMonthOwn: currentInvoice.cachedOwnTotal,
-                currentMonthThirdParty: currentInvoice.cachedThirdPartyTotal,
-                currentMonthPrepaid: currentInvoice.prepaidAmount,
-                currentMonthNetPayable: currentInvoice.cachedNetPayable
+            results.append(
+                CardMetrics(
+                    cardID: card.persistentModelID,
+                    uuid: card.id,
+                    name: card.name,
+                    totalLimit: card.totalLimit,
+                    closingDay: card.closingDay,
+                    dueDay: card.dueDay,
+                    colorHex: card.colorHex,
+                    openOwnAmount: openOwn,
+                    openThirdPartyAmount: openThirdParty,
+                    prepaidOnOpenInvoices: prepaidOnOpen,
+                    availableLimit: availableLimit,
+                    currentInvoiceID: currentInvoice.persistentModelID,
+                    currentInvoiceStatus: currentInvoice.status,
+                    currentMonthGross: currentInvoice.cachedGrossTotal,
+                    currentMonthOwn: currentInvoice.cachedOwnTotal,
+                    currentMonthThirdParty: currentInvoice.cachedThirdPartyTotal,
+                    currentMonthPrepaid: currentInvoice.prepaidAmount,
+                    currentMonthNetPayable: currentInvoice.cachedNetPayable
+                )
             )
         }
+        return results
     }
 
     func fetchInvoiceDetail(cardID: PersistentIdentifier, month: Int, year: Int) throws -> InvoiceDetailSnapshot {
@@ -436,8 +441,16 @@ actor FinanceEngineActor {
         try? modelContext.save()
 
         let sortedTxs = invoice.safeTransactions.sorted { $0.date > $1.date }
-        let allDTOs = sortedTxs.map { makeDTO(from: $0) }
-        let ownDTOs = sortedTxs.filter { !$0.isThirdParty }.map { makeDTO(from: $0) }
+        var allDTOs: [TransactionDTO] = []
+        var ownDTOs: [TransactionDTO] = []
+        allDTOs.reserveCapacity(sortedTxs.count)
+        for tx in sortedTxs {
+            let dto = makeDTO(from: tx)
+            allDTOs.append(dto)
+            if !tx.isThirdParty {
+                ownDTOs.append(dto)
+            }
+        }
         let borrowerSummaries = buildBorrowerSummaries(for: invoice)
 
         return InvoiceDetailSnapshot(
@@ -466,8 +479,11 @@ actor FinanceEngineActor {
             predicate: #Predicate<Invoice> { $0.month == month && $0.year == year }
         )
         let invoices = try modelContext.fetch(descriptor)
-        return invoices.flatMap { buildBorrowerSummaries(for: $0) }
-            .sorted { $0.pendingAmount > $1.pendingAmount }
+        var summaries: [BorrowerMonthlySummary] = []
+        for invoice in invoices {
+            summaries.append(contentsOf: buildBorrowerSummaries(for: invoice))
+        }
+        return summaries.sorted { $0.pendingAmount > $1.pendingAmount }
     }
 
     func fetchAccountExtract(accountFilter: PersistentIdentifier? = nil) throws -> (accounts: [AccountSummaryDTO], groups: [ExtractDayGroup]) {
@@ -503,12 +519,20 @@ actor FinanceEngineActor {
         let grouped = Dictionary(grouping: filtered) { tx in
             calendar.startOfDay(for: tx.date)
         }
-        let dayGroups = grouped.keys.sorted(by: >).map { day in
-            let dayTxs = (grouped[day] ?? []).map { makeDTO(from: $0) }
-            return ExtractDayGroup(
-                dayStart: day,
-                title: Formatters.daySectionTitle(day),
-                transactions: dayTxs
+        var dayGroups: [ExtractDayGroup] = []
+        for day in grouped.keys.sorted(by: >) {
+            let transactions = grouped[day] ?? []
+            var dayTxs: [TransactionDTO] = []
+            dayTxs.reserveCapacity(transactions.count)
+            for tx in transactions {
+                dayTxs.append(makeDTO(from: tx))
+            }
+            dayGroups.append(
+                ExtractDayGroup(
+                    dayStart: day,
+                    title: Formatters.daySectionTitle(day),
+                    transactions: dayTxs
+                )
             )
         }
 
@@ -523,11 +547,12 @@ actor FinanceEngineActor {
         let profitPct = totalInvested > 0 ? (profitAmount / totalInvested) * 100.0 : 0.0
 
         let byClass = Dictionary(grouping: investments) { $0.assetClass }
-        let allocations: [AssetAllocationSlice] = AssetClass.allCases.compactMap { assetClass in
+        var allocations: [AssetAllocationSlice] = []
+        for assetClass in AssetClass.allCases {
             let sum = (byClass[assetClass] ?? []).reduce(0.0) { $0 + $1.currentBalance }
-            guard sum > 0 else { return nil }
+            guard sum > 0 else { continue }
             let pct = totalBalance > 0 ? (sum / totalBalance) * 100.0 : 0.0
-            return AssetAllocationSlice(assetClass: assetClass, totalValue: sum, percentage: pct)
+            allocations.append(AssetAllocationSlice(assetClass: assetClass, totalValue: sum, percentage: pct))
         }
 
         let dtos = investments.map {
@@ -890,9 +915,10 @@ actor FinanceEngineActor {
             settlement.borrower?.persistentModelID
         }
 
-        return groupedTxs.compactMap { key, txs in
+        var summaries: [BorrowerMonthlySummary] = []
+        for (key, txs) in groupedTxs {
             guard let borrowerID = key,
-                  let borrower = txs.first?.borrower else { return nil }
+                  let borrower = txs.first?.borrower else { continue }
 
             let totalDue = txs.reduce(0.0) { $0 + $1.amount }
             let borrowerSettlements = settlementsByBorrower[borrowerID] ?? []
@@ -921,28 +947,35 @@ actor FinanceEngineActor {
                 status = .pending
             }
 
-            let dtos = txs.sorted { $0.date > $1.date }.map { makeDTO(from: $0) }
+            let sortedTxs = txs.sorted { $0.date > $1.date }
+            var dtos: [TransactionDTO] = []
+            dtos.reserveCapacity(sortedTxs.count)
+            for tx in sortedTxs {
+                dtos.append(makeDTO(from: tx))
+            }
 
-            return BorrowerMonthlySummary(
-                borrowerID: borrower.persistentModelID,
-                borrowerUUID: borrower.id,
-                borrowerName: borrower.name,
-                borrowerPhone: borrower.phone,
-                avatarColorHex: borrower.avatarColorHex,
-                invoiceID: invoice.persistentModelID,
-                invoiceUUID: invoice.id,
-                cardName: invoice.card?.name ?? "Cartão",
-                month: invoice.month,
-                year: invoice.year,
-                totalDue: totalDue,
-                receivedInAccount: received,
-                appliedToInvoice: applied,
-                pendingAmount: pending,
-                status: status,
-                transactions: dtos
+            summaries.append(
+                BorrowerMonthlySummary(
+                    borrowerID: borrower.persistentModelID,
+                    borrowerUUID: borrower.id,
+                    borrowerName: borrower.name,
+                    borrowerPhone: borrower.phone,
+                    avatarColorHex: borrower.avatarColorHex,
+                    invoiceID: invoice.persistentModelID,
+                    invoiceUUID: invoice.id,
+                    cardName: invoice.card?.name ?? "Cartão",
+                    month: invoice.month,
+                    year: invoice.year,
+                    totalDue: totalDue,
+                    receivedInAccount: received,
+                    appliedToInvoice: applied,
+                    pendingAmount: pending,
+                    status: status,
+                    transactions: dtos
+                )
             )
         }
-        .sorted { $0.pendingAmount > $1.pendingAmount }
+        return summaries.sorted { $0.pendingAmount > $1.pendingAmount }
     }
 
     private func evaluateBudgetAlert(for category: Category, month: Int, year: Int) throws -> BudgetThresholdAlert? {
@@ -959,14 +992,13 @@ actor FinanceEngineActor {
             )
         )
 
-        var spent = debitTxs
-            .filter {
-                $0.paymentMethod == .debitPix &&
-                $0.kind == .expense &&
-                !$0.isThirdParty &&
-                $0.category?.persistentModelID == category.persistentModelID
+        let targetCategoryID = category.persistentModelID
+        var spent = 0.0
+        for tx in debitTxs where tx.paymentMethod == .debitPix && tx.kind == .expense && !tx.isThirdParty {
+            if tx.category?.persistentModelID == targetCategoryID {
+                spent += tx.amount
             }
-            .reduce(0.0) { $0 + $1.amount }
+        }
 
         let invoices = try modelContext.fetch(
             FetchDescriptor<Invoice>(
@@ -974,9 +1006,11 @@ actor FinanceEngineActor {
             )
         )
         for inv in invoices {
-            spent += inv.safeTransactions
-                .filter { !$0.isThirdParty && $0.category?.persistentModelID == category.persistentModelID }
-                .reduce(0.0) { $0 + $1.amount }
+            for tx in inv.safeTransactions where !tx.isThirdParty {
+                if tx.category?.persistentModelID == targetCategoryID {
+                    spent += tx.amount
+                }
+            }
         }
 
         let percentage = (spent / budget) * 100.0
