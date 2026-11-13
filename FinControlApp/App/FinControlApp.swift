@@ -70,24 +70,26 @@ struct FinControlApp: App {
 
     @MainActor
     private func authenticateUser() async {
+        let reason = "Desbloqueie o FinControl Pro para visualizar seus dados financeiros."
+        do {
+            let success = try await Self.evaluateDeviceAuthentication(reason: reason)
+            if success {
+                isUnlocked = true
+                authError = nil
+            }
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    private nonisolated static func evaluateDeviceAuthentication(reason: String) async throws -> Bool {
         let context = LAContext()
         var error: NSError?
-        let reason = "Desbloqueie o FinControl Pro para visualizar seus dados financeiros."
-
-        if context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) {
-            do {
-                let success = try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
-                if success {
-                    isUnlocked = true
-                    authError = nil
-                }
-            } catch {
-                authError = error.localizedDescription
-            }
-        } else {
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
             // Simulator or device without passcode/biometrics enrolled
-            isUnlocked = true
+            return true
         }
+        return try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
     }
 }
 

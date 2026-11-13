@@ -17,8 +17,7 @@ struct BudgetThresholdAlert: Sendable, Hashable {
     let year: Int
 }
 
-@MainActor
-final class NotificationService {
+final class NotificationService: Sendable {
     static let shared = NotificationService()
 
     private init() {}
